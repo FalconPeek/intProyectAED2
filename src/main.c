@@ -18,6 +18,6 @@ static void print_banner() {
 int main() {
     print_banner();
     printf("MAX_STR = %d\n", MAX_STR);
-    puts("Build OK. Proxima Fase: TADs base (RNG, lista, pila, cola, BST).");  
+    puts("Build OK. Proxima Fase: TADs base (RNG, lista, pila, cola, BST).");
     return OK;
 }
