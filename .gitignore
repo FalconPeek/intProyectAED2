@@ -1,0 +1,9 @@
+# Compilados
+build/
+*.o
+*.a
+*.so
+a.out
+*.exe
+# Herramientas
+.vscode/
