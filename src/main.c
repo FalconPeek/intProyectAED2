@@ -7,12 +7,16 @@
 */
 
 static void print_banner() {
-    printf("=====================================\n");
-    printf("      Proyecto Integrador en C       \n");
-    printf("           AdivinaNro+               \n");
-    printf("          Version 1.0.0              \n");
-    printf("       Por Lucas y Alexis            \n");    
-    printf("=====================================\n");
+    printf("=======================================\n");
+    printf("       Proyecto Integrador en C        \n");
+    printf("             AdivinaNro+               \n");
+    printf("            Version 1.0.0              \n");
+    printf("              Coded by                 \n");
+    printf("              - Lucas                  \n");
+    printf("              - Alexis                 \n");
+    printf("              - Emma                   \n");
+    printf("              - Juanma                 \n");    
+    printf("=======================================\n");
 }
 
 int main() {
