@@ -1,34 +1,34 @@
-# Reproductor & Recomendador Offline (AED2)
+# Reproductor MP3 Minimalista
 
-Aplicación de consola escrita en C99 que integra múltiples estructuras de datos
-(lista, cola, pila, BST, trie, grafo) para gestionar una biblioteca musical,
-construir playlists y ofrecer recomendaciones básicas. El programa soporta
-múltiples usuarios, estadísticas detalladas por canción y persistencia en
-archivos de texto.
+Aplicación de consola escrita en C99 que reproduce archivos MP3 ubicados en la
+carpeta `canciones/`. El programa detecta automáticamente los nuevos archivos,
+pide los metadatos básicos (título y artista) la primera vez que aparecen y
+permite obtener recomendaciones simples basadas en el artista de la última
+pista reproducida.
 
-## Características principales
-
-- **Biblioteca musical:** carga/guardado desde `data/biblioteca.txt`, índice BST
-  por artista+título y trie para autocompletado por prefijo.
-- **Playlists persistentes:** lista enlazada con undo mediante pila, búsqueda
-  lineal y binaria (con métricas de comparaciones) y guardado automático en
-  `data/playlist/miplaylist.txt`.
-- **Reproducción y cola:** cola FIFO para la lista de reproducción activa.
-  Incrementa el `playcount` de la biblioteca y actualiza estadísticas del
-  usuario logueado.
-- **Recomendaciones:** grafo de similitud construido por artista (optimizado a
-  O(n log n) mediante ordenamiento), con BFS para sugerir canciones.
-- **Usuarios y estadísticas:** persistidos en `data/usuarios.txt`, con métricas
-  agregadas (reproducciones y segundos). Las estadísticas por canción se
-  almacenan por usuario en `data/userstats/<usuario>.txt` y alimentan el
-  leaderboard y los tops personales.
-- **Persistencia automática:** directorios `data/playlist/` y `data/userstats/`
-  se crean al inicio; al salir se guardan los cambios pendientes.
-
-## Requisitos y compilación
+## Requisitos
 
 - Compilador C99 (probado con `gcc 12`).
+- [`libmpg123`](https://www.mpg123.de/) para decodificar MP3.
+- [`PortAudio`](https://portaudio.com/) para la salida de audio.
 - `make`.
+
+En Linux (ej. Ubuntu) podés instalar las dependencias con:
+
+```bash
+sudo apt-get install libmpg123-dev portaudio19-dev
+```
+
+En Windows se recomienda compilar con [MSYS2](https://www.msys2.org/) o WSL:
+
+```bash
+pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-portaudio mingw-w64-x86_64-mpg123
+```
+
+Asegurate de que los directorios de inclusión y librerías de PortAudio y
+mpg123 estén disponibles en tu entorno antes de compilar.
+
+## Compilación y ejecución
 
 ```bash
 make            # compila en build/app
@@ -41,42 +41,37 @@ Para recompilar desde cero:
 make clean && make
 ```
 
-## Uso rápido
+## Flujo de uso
 
-1. **Cargar biblioteca** desde el menú (opción 1).
-2. **Login/crear usuario** (opción 2). Las estadísticas por canción se cargan
-   automáticamente.
-3. **Explorar** la biblioteca con búsquedas BST o trie (opciones 3 y 4).
-4. **Gestionar la playlist** (opción 5): agregar/quitar canciones, buscar por ID
-   o título (lineal/binaria) y deshacer acciones.
-5. **Reproducir canciones** (opción 6) para actualizar métricas y reproducir la
-   cola.
-6. **Recomendaciones** (opción 8) y **estadísticas/leaderboards** (opción 9).
-7. **Guardar** en cualquier momento (opción 11) o dejar que el cierre guarde
-   automáticamente si hubo cambios.
+1. **Agregá archivos MP3** dentro del directorio `canciones/`.
+2. **Ejecutá la aplicación** (`./build/app`).
+3. La primera vez que se detecte una canción se solicitará el título y el
+   artista. Esta información se guarda en `data/metadata.txt` para usos
+   posteriores.
+4. **Listá y reproducí canciones** desde el menú. La reproducción es real
+   mediante libmpg123 + PortAudio.
+5. **Consultá recomendaciones** para obtener más pistas del mismo artista que
+   la canción reproducida recientemente.
+6. **Reescanear** permite detectar nuevos archivos agregados en caliente.
 
-## Datos y estructura de directorios
+## Estructura del proyecto
 
 ```
 intProyectAED2/
+├── canciones/           # Carpeta a la que debes copiar tus MP3
 ├── data/
-│   ├── biblioteca.txt           # Biblioteca musical
-│   ├── playlist/miplaylist.txt  # Playlist persistida
-│   ├── usuarios.txt             # Métricas agregadas por usuario
-│   └── userstats/               # Directorio autogenerado para stats por usuario
-└── build/                       # Binarios generados por make
+│   └── metadata.txt     # Metadatos persistidos (se crea al vuelo)
+├── include/             # Archivos de cabecera
+├── src/                 # Código fuente
+└── Makefile
 ```
 
-## Verificación rápida / debug manual
+## Notas
 
-La aplicación es interactiva. Para revisar el flujo completo se recomienda:
-
-1. Compilar (`make`).
-2. Ejecutar `./build/app` y recorrer el menú, verificando carga, búsqueda,
-   reproducción, undo y guardado.
-3. Revisar los archivos en `data/` tras guardar o salir para confirmar la
-   persistencia.
-
-Además se puede usar `valgrind` (`valgrind ./build/app`) para detectar fugas de
-memoria durante sesiones de depuración.
-
+- El reproductor trabaja únicamente con archivos `.mp3` ubicados directamente
+  bajo `canciones/`.
+- Si necesitás limpiar los metadatos guardados, podés eliminar
+  `data/metadata.txt`; la información será solicitada nuevamente en el próximo
+  escaneo.
+- No se mantienen estadísticas históricas ni estructuras de grafo: el enfoque
+  es simple y directo para facilitar futuras ampliaciones.
