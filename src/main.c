@@ -8,23 +8,21 @@
 */
 
 static void print_banner() {
-    printf("=======================================\n");
-    printf("       Proyecto Integrador en C        \n");
-    printf("          Reproductor Offline          \n");
-    printf("             Version 1.0.0              \n");
-    printf("              Coded by                 \n");
-    printf("              - Lucas                  \n");
-    printf("              - Alexis                 \n");
-    printf("              - Emma                   \n");
-    printf("              - Juanma                 \n");    
-    printf("=======================================\n");
+    printf("==============================================\n");
+    printf("            Proyecto Integrador en C          \n");
+    printf("              Reproductor Offline             \n");
+    printf("                 Version 1.1.0                \n");
+    printf("                   Coded by                   \n");
+    printf("                   - Lucas  -                 \n");
+    printf("                   - Alexis -                 \n");
+    printf("                   - Emma   -                 \n");
+    printf("                   - Juanma -                 \n");    
+    printf("==============================================\n");
 }
 
 int main() {
     print_banner();
-    printf("MAX_STR = %d\n", MAX_STR);
-    puts("Build OK. Proxima Fase: TADs base (RNG, lista, pila, cola, BST).");
-
+    puts("==Iniciando app==");
     app_run();
     return OK;
 }

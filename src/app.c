@@ -92,6 +92,93 @@ static int biblio_to_array(tCancion** out){
     *out = v; return n;
 }
 
+/* Elige una canción usando prefijo de título (Trie) y devuelve el song_id,
+   o -1 si no hubo selección válida. Muestra hasta K coincidencias. */
+static int elegir_cancion_por_prefijo(void){
+    if(!g_trie){ puts("Trie no inicializado. Cargá la biblioteca primero."); return -1; }
+
+    char pref[50];
+    printf("Prefijo de titulo: ");
+    if(scanf(" %49[^\n]", pref) != 1) return -1;
+
+    enum { KMAX = 10 };
+    int ids[KMAX];
+    int k = trie_collect_prefix(g_trie, pref, ids, KMAX);
+    if(k <= 0){
+        puts("Sin coincidencias para ese prefijo.");
+        return -1;
+    }
+
+    puts("Coincidencias:");
+    int printed = 0;
+    for(int i = 0; i < k; ++i){
+        tCancion* c = lista_find_by_id(g_biblio, ids[i]);
+        if(c){
+            printf("%2d) ", printed+1);
+            cancion_print(c);
+            ids[printed] = ids[i]; /* compactar por si alguna id no existiera */
+            printed++;
+        }
+    }
+    if(printed == 0){
+        puts("No se encontraron canciones válidas en biblioteca.");
+        return -1;
+    }
+
+    int sel = 0;
+    printf("Elegí una opción (1-%d, 0 para cancelar): ", printed);
+    if(scanf("%d", &sel) != 1 || sel < 1 || sel > printed) {
+        puts("Cancelado o selección inválida.");
+        return -1;
+    }
+    return ids[sel-1];
+}
+
+/* Elige una canción por prefijo (Trie) pero SOLO entre las que están en la playlist.
+   Devuelve song_id o -1 si no hubo selección válida. */
+static int elegir_cancion_por_prefijo_en_playlist(void){
+    if(!g_trie){ puts("Trie no inicializado. Cargá la biblioteca primero."); return -1; }
+
+    char pref[50];
+    printf("Prefijo de titulo (en playlist): ");
+    if(scanf(" %49[^\n]", pref) != 1) return -1;
+
+    enum { KMAX = 32 };     /* más amplio, por si la playlist es grande */
+    int ids_tmp[KMAX];
+    int k = trie_collect_prefix(g_trie, pref, ids_tmp, KMAX);
+    if(k <= 0){
+        puts("Sin coincidencias para ese prefijo.");
+        return -1;
+    }
+
+    /* Filtrar: solo mostrar los que están en la playlist */
+    int ids[KMAX];
+    int printed = 0;
+    puts("Coincidencias en playlist:");
+    for(int i=0;i<k;i++){
+        tCancion* cLib = lista_find_by_id(g_biblio, ids_tmp[i]);
+        tCancion* cPl  = lista_find_by_id(g_playlist, ids_tmp[i]);
+        if(cLib && cPl){
+            printf("%2d) ", printed+1);
+            cancion_print(cLib);
+            ids[printed++] = ids_tmp[i];
+        }
+    }
+    if(printed == 0){
+        puts("No hay canciones de esa búsqueda dentro de tu playlist.");
+        return -1;
+    }
+
+    int sel = 0;
+    printf("Elegí una opción (1-%d, 0 para cancelar): ", printed);
+    if(scanf("%d",&sel)!=1 || sel<1 || sel>printed){
+        puts("Cancelado o selección inválida.");
+        return -1;
+    }
+    return ids[sel-1];
+}
+
+
 /* --- Menús --- */
 static void do_cargar_biblio(void){
     if(!g_trie){ trie_init(&g_trie); }
@@ -155,19 +242,22 @@ static void do_playlist(void){
     int op=-1;
     do{
         puts("\nPLAYLIST");
-        puts("1) Agregar por id");
+        puts("1) Agregar por prefijo (Trie)");
         puts("2) Quitar por id");
         puts("3) Mostrar playlist");
+        puts("4) Quitar por prefijo (Trie)");
         puts("0) Volver");
         printf("> "); if(scanf("%d",&op)!=1) return;
+
         if(op==1){
-            int id; printf("id: "); if(scanf("%d",&id)!=1) continue;
+            int id = elegir_cancion_por_prefijo();
+            if(id < 0) continue;
             tCancion* c = lista_find_by_id(g_biblio, id);
-            if(!c){ puts("No existe en biblioteca."); continue; }
+            if(!c){ puts("No existe en biblioteca (id huérfano)."); continue; }
             if(!lista_push_front(&g_playlist, *c)){ puts("Sin memoria."); continue; }
             tAccion a = { .action=1, .song_id=id, .aux=0 }; /* ADD */
             pila_push(&g_undo, a);
-            puts("Agregada.");
+            puts("Agregada desde Trie.");
         }else if(op==2){
             int id; printf("id: "); if(scanf("%d",&id)!=1) continue;
             if(lista_remove_by_id(&g_playlist, id)){
@@ -177,9 +267,20 @@ static void do_playlist(void){
             }else puts("No estaba en playlist.");
         }else if(op==3){
             mostrar_lista(g_playlist, "Playlist actual");
+        }else if(op==4){
+            int id = elegir_cancion_por_prefijo_en_playlist();
+            if(id < 0) continue;
+            if(lista_remove_by_id(&g_playlist, id)){
+                tAccion a = { .action=2, .song_id=id, .aux=0 }; /* DEL */
+                pila_push(&g_undo, a);
+                puts("Quitada (Trie).");
+            }else{
+                puts("Esa canción no está en tu playlist.");
+            }
         }
     }while(op!=0);
 }
+
 
 static void do_undo(void){
     tAccion a;
