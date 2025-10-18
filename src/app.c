@@ -17,6 +17,83 @@
 #include "usuarios_lista.h"
 #include "usuario.h"
 #include "cancion.h"
+/* ===== TUI ANSI sin dependencias ===== */
+#include <termios.h>
+#include <unistd.h>
+
+static void ui_flush_input(void){
+    int c;
+    while((c=getchar())!='\n' && c!=EOF) { /* vacía buffer */ }
+}
+
+
+static void ansi_clear(void){ printf("\x1b[2J\x1b[H"); }                 /* limpia */
+static void ansi_hide_cursor(void){ printf("\x1b[?25l"); }
+static void ansi_show_cursor(void){ printf("\x1b[?25h"); }
+static void ansi_color(int fg){ printf("\x1b[%dm", fg); }               /* 30..37 */
+static void ansi_bold(int on){ printf("\x1b[%dm", on?1:22); }
+static void ansi_reset(void){ printf("\x1b[0m"); }
+
+/* lectura cruda de teclas (sin Enter) */
+static int tty_raw_on(struct termios* orig){
+    struct termios raw;
+    if(tcgetattr(STDIN_FILENO, orig) < 0) return 0;
+    raw = *orig;
+    raw.c_lflag &= ~(ICANON | ECHO);
+    raw.c_cc[VMIN]  = 1;
+    raw.c_cc[VTIME] = 0;
+    return tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == 0;
+}
+static void tty_raw_off(const struct termios* orig){
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, orig);
+}
+
+/* lee key: retorna códigos: 13=Enter, 27/’[’ flechas translate a 1000/1001 */
+enum { KEY_ENTER=13, KEY_UP=1000, KEY_DOWN=1001 };
+static int read_key(void){
+    int c = getchar();
+    if(c == 13 || c == '\n') return KEY_ENTER;
+    if(c == 27){ /* ESC seq */
+        int c1 = getchar();
+        if(c1 == '['){
+            int c2 = getchar();
+            if(c2 == 'A') return KEY_UP;
+            if(c2 == 'B') return KEY_DOWN;
+        }
+    }
+    return c;
+}
+
+/* ===== Helpers de UI (pantalla limpia y headers) ===== */
+static void ui_clear(void){ printf("\x1b[2J\x1b[H"); }  /* limpia y lleva cursor al (1,1) */
+
+static void ui_header(const char* title){
+    ui_clear();
+    ansi_bold(1); ansi_color(36);
+    printf("╔════════════════════════════════════════════════════════╗\n");
+    printf("║  %s\n", title);
+    printf("╚════════════════════════════════════════════════════════╝\n");
+    ansi_reset();
+    puts("");
+}
+
+/* Espera Enter para continuar (no deja basura en pantalla) */
+static void ui_press_enter(void){
+    puts("\n[Enter] para continuar...");
+    struct termios orig;
+    if(tty_raw_on(&orig)){
+        for(;;){
+            int k = read_key();
+            if(k == KEY_ENTER) break;
+        }
+        tty_raw_off(&orig);
+    }else{
+        /* fallback */
+        int c; do{ c=getchar(); }while(c!='\n' && c!=EOF);
+    }
+}
+/* ===== App principal ===== */
+
 
 /* Rutas simples */
 #define PATH_BIBLIO   "data/biblioteca.txt"
@@ -99,6 +176,7 @@ static int elegir_cancion_por_prefijo(void){
 
     char pref[50];
     printf("Prefijo de titulo: ");
+    ui_flush_input();
     if(scanf(" %49[^\n]", pref) != 1) return -1;
 
     enum { KMAX = 10 };
@@ -127,6 +205,7 @@ static int elegir_cancion_por_prefijo(void){
 
     int sel = 0;
     printf("Elegí una opción (1-%d, 0 para cancelar): ", printed);
+    ui_flush_input();
     if(scanf("%d", &sel) != 1 || sel < 1 || sel > printed) {
         puts("Cancelado o selección inválida.");
         return -1;
@@ -141,6 +220,7 @@ static int elegir_cancion_por_prefijo_en_playlist(void){
 
     char pref[50];
     printf("Prefijo de titulo (en playlist): ");
+    ui_flush_input();
     if(scanf(" %49[^\n]", pref) != 1) return -1;
 
     enum { KMAX = 32 };     /* más amplio, por si la playlist es grande */
@@ -171,6 +251,7 @@ static int elegir_cancion_por_prefijo_en_playlist(void){
 
     int sel = 0;
     printf("Elegí una opción (1-%d, 0 para cancelar): ", printed);
+    ui_flush_input();
     if(scanf("%d",&sel)!=1 || sel<1 || sel>printed){
         puts("Cancelado o selección inválida.");
         return -1;
@@ -178,36 +259,83 @@ static int elegir_cancion_por_prefijo_en_playlist(void){
     return ids[sel-1];
 }
 
+static const char* g_menu_items[] = {
+    "Cargar biblioteca (TXT)",
+    "Login usuario",
+    "Buscar cancion (BST por artista,titulo)",
+    "Autocompletar por prefijo (Trie)",
+    "Playlist: agregar/quitar/mostrar",
+    "Reproducir: encolar / siguiente / ver cola",
+    "Undo (deshacer ultima accion de playlist)",
+    "Construir grafo y recomendar (BFS)",
+    "Top-N mas reproducidas (global)",
+    "Guardar playlist y usuarios",
+    "Salir"
+};
+static const int g_menu_count = 11;
+
+static int tui_menu_select(void){
+    struct termios orig;
+    if(!tty_raw_on(&orig)) return -1;
+    ansi_hide_cursor();
+
+    int sel = 0, running = 1;
+    while(running){
+        ansi_clear();
+        /* marco y título */
+        ansi_bold(1); ansi_color(36);
+        puts("╔════════════════════════════════════════════════════════╗");
+        puts("║    Reproductor & Recomendador Offline (AED2 - TUI)     ║");
+        puts("╚════════════════════════════════════════════════════════╝");
+        ansi_reset();
+
+        puts("");
+        for(int i=0;i<g_menu_count;i++){
+            if(i==sel){
+                ansi_bold(1); ansi_color(32);
+                printf(" -> %2d) %s\n", i+1, g_menu_items[i]);
+                ansi_reset();
+            }else{
+                printf("   %2d) %s\n", i+1, g_menu_items[i]);
+            }
+        }
+        puts("\nUsa ↑/↓ y Enter. ESC para salir.");
+
+        int k = read_key();
+        if(k == KEY_UP){ if(--sel < 0) sel = g_menu_count-1; }
+        else if(k == KEY_DOWN){ if(++sel >= g_menu_count) sel = 0; }
+        else if(k == KEY_ENTER){ running = 0; }
+        else if(k == 27){ sel = g_menu_count-1; running = 0; } /* ESC = Salir */
+    }
+
+    ansi_show_cursor();
+    tty_raw_off(&orig);
+    return sel+1; /* opciones 1..11 (igual que tu switch) */
+}
+
 
 /* --- Menús --- */
 static void do_cargar_biblio(void){
-    if(!g_trie){ trie_init(&g_trie); }
+    ui_header("Cargar biblioteca (TXT)");
+    if(!g_trie) trie_init(&g_trie);
+
     if(persist_biblio_load_txt(PATH_BIBLIO, &g_biblio, &g_idx, &g_trie))
         puts("OK: Biblioteca cargada.");
     else
-        puts("ERROR: No se pudo cargar biblioteca.");
+        puts("ERROR: No se pudo cargar biblioteca. Verifique data/biblioteca.txt");
+
+    ui_press_enter();
 }
 
+
 static void do_login(void){
+    ui_header("Login de usuario");
     char user[50];
     printf("Usuario: ");
-    if(scanf(" %49s", user)!=1) return;
+    ui_flush_input();
+    if(scanf(" %49s", user)!=1){ puts("Entrada invalida."); ui_press_enter(); return; }
 
     if(!g_users) listaU_init(&g_users);
-    tUsuario* u = listaU_find_username(g_users, user);
-    if(!u){
-        tUsuario nu; memset(&nu, 0, sizeof(nu));
-        snprintf(nu.username, sizeof(nu.username), "%s", user);
-        if(!listaU_push_front(&g_users, &nu)){ puts("Sin memoria."); return; }
-        u = listaU_find_username(g_users, user);
-        puts("Usuario creado.");
-    }else{
-        puts("Usuario encontrado.");
-    }
-    g_user = u;
-    usuario_print(g_user);
-
-    /* Cargar usuarios desde disco si no lo hicimos aún */
     static int loaded = 0;
     if(!loaded){
         if(persist_usuarios_load_txt(PATH_USUARIOS, &g_users))
@@ -216,11 +344,29 @@ static void do_login(void){
             puts("Usuarios (TXT): ERROR de carga.");
         loaded = 1;
     }
+
+    tUsuario* u = listaU_find_username(g_users, user);
+    if(!u){
+        tUsuario nu; memset(&nu,0,sizeof(nu));
+        snprintf(nu.username, sizeof(nu.username), "%s", user);
+        if(!listaU_push_front(&g_users, &nu)){ puts("Sin memoria."); ui_press_enter(); return; }
+        u = listaU_find_username(g_users, user);
+        puts("Usuario creado.");
+    }else{
+        puts("Usuario encontrado.");
+    }
+    g_user = u;
+    puts("");
+    usuario_print(g_user);
+    ui_press_enter();
 }
+
 
 static void do_buscar_bst(void){
     char artista[50], titulo[50];
+    ui_flush_input();
     printf("Artista: "); if(scanf(" %49[^\n]", artista)!=1) return;
+    ui_flush_input();
     printf("Titulo:  "); if(scanf(" %49[^\n]", titulo)!=1) return;
     tCancion* c = bst_find(g_idx, artista, titulo);
     if(!c) puts("No encontrada.");
@@ -229,6 +375,7 @@ static void do_buscar_bst(void){
 
 static void do_buscar_trie(void){
     char pref[50];
+    ui_flush_input();
     printf("Prefijo de titulo: "); if(scanf(" %49[^\n]", pref)!=1) return;
     int ids[10]; int k = trie_collect_prefix(g_trie, pref, ids, 10);
     if(k<=0){ puts("Sin coincidencias."); return; }
@@ -241,45 +388,57 @@ static void do_buscar_trie(void){
 static void do_playlist(void){
     int op=-1;
     do{
-        puts("\nPLAYLIST");
+        ui_header("Playlist");
         puts("1) Agregar por prefijo (Trie)");
         puts("2) Quitar por id");
         puts("3) Mostrar playlist");
         puts("4) Quitar por prefijo (Trie)");
         puts("0) Volver");
+        ui_flush_input();
         printf("> "); if(scanf("%d",&op)!=1) return;
 
         if(op==1){
+            ui_header("Playlist > Agregar por prefijo");
             int id = elegir_cancion_por_prefijo();
-            if(id < 0) continue;
-            tCancion* c = lista_find_by_id(g_biblio, id);
-            if(!c){ puts("No existe en biblioteca (id huérfano)."); continue; }
-            if(!lista_push_front(&g_playlist, *c)){ puts("Sin memoria."); continue; }
-            tAccion a = { .action=1, .song_id=id, .aux=0 }; /* ADD */
-            pila_push(&g_undo, a);
-            puts("Agregada desde Trie.");
-        }else if(op==2){
-            int id; printf("id: "); if(scanf("%d",&id)!=1) continue;
-            if(lista_remove_by_id(&g_playlist, id)){
-                tAccion a = { .action=2, .song_id=id, .aux=0 }; /* DEL */
-                pila_push(&g_undo, a);
-                puts("Quitada.");
-            }else puts("No estaba en playlist.");
-        }else if(op==3){
-            mostrar_lista(g_playlist, "Playlist actual");
-        }else if(op==4){
-            int id = elegir_cancion_por_prefijo_en_playlist();
-            if(id < 0) continue;
-            if(lista_remove_by_id(&g_playlist, id)){
-                tAccion a = { .action=2, .song_id=id, .aux=0 }; /* DEL */
-                pila_push(&g_undo, a);
-                puts("Quitada (Trie).");
-            }else{
-                puts("Esa canción no está en tu playlist.");
+            if(id >= 0){
+                tCancion* c = lista_find_by_id(g_biblio, id);
+                if(c && lista_push_front(&g_playlist, *c)){
+                    tAccion a = { .action=1, .song_id=id, .aux=0 };
+                    pila_push(&g_undo, a);
+                    puts("Agregada desde Trie.");
+                }else puts("No se pudo agregar.");
             }
+            ui_press_enter();
+        }else if(op==2){
+            ui_header("Playlist > Quitar por id");
+            ui_flush_input();
+            int id; printf("id: "); if(scanf("%d",&id)==1){
+                if(lista_remove_by_id(&g_playlist, id)){
+                    tAccion a = { .action=2, .song_id=id, .aux=0 };
+                    pila_push(&g_undo, a);
+                    puts("Quitada.");
+                }else puts("No estaba en playlist.");
+            }
+            ui_press_enter();
+        }else if(op==3){
+            ui_header("Playlist > Mostrar");
+            mostrar_lista(g_playlist, "Playlist actual");
+            ui_press_enter();
+        }else if(op==4){
+            ui_header("Playlist > Quitar por prefijo");
+            int id = elegir_cancion_por_prefijo_en_playlist();
+            if(id >= 0){
+                if(lista_remove_by_id(&g_playlist, id)){
+                    tAccion a = { .action=2, .song_id=id, .aux=0 };
+                    pila_push(&g_undo, a);
+                    puts("Quitada (Trie).");
+                }else puts("Esa canción no está en tu playlist.");
+            }
+            ui_press_enter();
         }
     }while(op!=0);
 }
+
 
 
 static void do_undo(void){
@@ -305,8 +464,10 @@ static void do_repro(void){
         puts("2) Siguiente (play)");
         puts("3) Ver cola (ids)");
         puts("0) Volver");
+        ui_flush_input();
         printf("> "); if(scanf("%d",&op)!=1) return;
         if(op==1){
+            ui_flush_input();
             int id; printf("id: "); if(scanf("%d",&id)!=1) continue;
             tCancion* c = lista_find_by_id(g_biblio, id);
             if(!c){ puts("No existe en biblioteca."); continue; }
@@ -323,7 +484,7 @@ static void do_repro(void){
                 g_user->reproducciones_totales++;
                 g_user->segundos_escucha_total += c->duracion_seg;
             }
-            printf("▶ Reproduciendo: "); cancion_print(c);
+            printf("> Reproduciendo: "); cancion_print(c);
             if(g_user){ printf("Usuario "); usuario_print(g_user); }
         }else if(op==3){
             /* volcar cola sin destruir: hacemos pop y volvemos a encolar */
@@ -343,7 +504,9 @@ static void do_repro(void){
 
 static void do_recomendar(void){
     construir_grafo_por_artista();
+    ui_flush_input();
     int id,k; printf("Desde id: "); if(scanf("%d",&id)!=1) return;
+    ui_flush_input();
     printf("Cuantos? "); if(scanf("%d",&k)!=1) return;
     int* out = (int*)malloc(sizeof(int)*k);
     if(!out){ puts("Sin memoria."); return; }
@@ -403,8 +566,8 @@ void app_run(void){
     do{
         menu();
         printf("> ");
-        if(scanf("%d",&op)!=1){ puts("Entrada invalida."); return; }
-
+        op = tui_menu_select();
+        ui_clear();
         switch(op){
             case 1: do_cargar_biblio(); break;
             case 2: do_login(); break;
