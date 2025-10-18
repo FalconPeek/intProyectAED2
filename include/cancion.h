@@ -4,17 +4,17 @@
 
 /* Identificador único opcional (secuencial). */
 typedef struct {
-    int    id;
-    tString titulo;
-    tString artista;
-    tString genero;
+    int    id; // identificador único
+    tString titulo; // título de la canción
+    tString artista; // nombre del artista
+    tString genero; // género musical
     int    duracion_seg;   /* duración en segundos */
     int    playcount;      /* reproducciones acumuladas */
 } tCancion;
 
 /* Helpers de impresión/parsing (opcionales, pero útiles) */
 void cancion_print(const tCancion* c);
-int  cancion_cmp_titulo(const tCancion* a, const tCancion* b);          /* strcmp por título */
+int  cancion_cmp_titulo(const tCancion* a, const tCancion* b);           /* strcmp por título */
 int  cancion_cmp_artista_titulo(const tCancion* a, const tCancion* b);  /* (artista,titulo) */
 
 #endif

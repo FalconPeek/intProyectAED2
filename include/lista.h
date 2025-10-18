@@ -8,7 +8,7 @@ typedef struct nodoL {
     struct nodoL* sig;
 } tListaC;
 
-void lista_init(tListaC** L);                          /* *L=NULL */
+void lista_init(tListaC** L);                         /* *L=NULL */
 int  lista_vacia(const tListaC* L);
 int  lista_push_front(tListaC** L, tCancion x);        /* 1 ok, 0 sin memoria */
 tCancion* lista_find_by_title(tListaC* L, const char* titulo);

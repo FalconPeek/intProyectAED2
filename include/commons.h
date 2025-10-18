@@ -12,6 +12,6 @@ typedef enum {
     ERROR = -1
 } tStatus;
 
-typedef char tString50[MAX_STR];
+typedef char tString[MAX_STR]; // Cadena de caracteres de longitud máxima 49 + '\0'
 
 #endif // COMMONS_H
