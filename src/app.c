@@ -109,9 +109,8 @@ static void do_login(void){
     if(!g_users) listaU_init(&g_users);
     tUsuario* u = listaU_find_username(g_users, user);
     if(!u){
-        tUsuario nu; memset(&nu,0,sizeof(nu));
-        strncpy(nu.username, user, sizeof(nu.username)-1);
-        nu.username[sizeof(nu.username)-1] = '\0';
+        tUsuario nu; memset(&nu, 0, sizeof(nu));
+        snprintf(nu.username, sizeof(nu.username), "%s", user);
         if(!listaU_push_front(&g_users, &nu)){ puts("Sin memoria."); return; }
         u = listaU_find_username(g_users, user);
         puts("Usuario creado.");
