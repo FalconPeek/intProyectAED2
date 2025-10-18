@@ -26,30 +26,68 @@ static int ensure_initialized(AudioPlayer *player) {
     return -1;
 }
 
+typedef struct {
+    PaDeviceIndex index;
+    const char *label;
+} DeviceCandidate;
+
+static PaError try_open_device(PaStream **stream, long rate, int channels, DeviceCandidate candidate) {
+    const PaDeviceInfo *info = Pa_GetDeviceInfo(candidate.index);
+    if (!info) {
+        return paInvalidDevice;
+    }
+    if (info->maxOutputChannels < channels) {
+        return paInvalidChannelCount;
+    }
+
+    PaStreamParameters params;
+    params.device = candidate.index;
+    params.channelCount = channels;
+    params.sampleFormat = paInt16;
+    params.suggestedLatency = info->defaultLowOutputLatency;
+    params.hostApiSpecificStreamInfo = NULL;
+
+    PaError support = Pa_IsFormatSupported(NULL, &params, (double)rate);
+    if (support != paNoError) {
+        fprintf(stderr, "%sEl dispositivo %s no soporta el formato solicitado: %s%s\n", COLOR_WARNING, info->name, Pa_GetErrorText(support), COLOR_RESET);
+        return support;
+    }
+
+    PaError err = Pa_OpenStream(stream, NULL, &params, (double)rate, paFramesPerBufferUnspecified, paNoFlag, NULL, NULL);
+    if (err == paNoError) {
+        const PaHostApiInfo *host_info = Pa_GetHostApiInfo(info->hostApi);
+        const char *api_name = host_info ? host_info->name : "API desconocida";
+        printf(COLOR_INFO STYLE_BOLD "> %s:%s %s (%s)%s\n", candidate.label, COLOR_RESET, info->name, api_name, COLOR_RESET);
+    }
+    return err;
+}
+
 static PaError open_output_stream(PaStream **stream, long rate, int channels) {
     if (!stream || channels <= 0) {
         return paInvalidChannelCount;
     }
 
+    PaError err = paDeviceUnavailable;
     PaDeviceIndex default_device = Pa_GetDefaultOutputDevice();
     if (default_device != paNoDevice) {
-        const PaDeviceInfo *info = Pa_GetDeviceInfo(default_device);
-        if (info && info->maxOutputChannels >= channels) {
-            PaStreamParameters params;
-            params.device = default_device;
-            params.channelCount = channels;
-            params.sampleFormat = paInt16;
-            params.suggestedLatency = info->defaultLowOutputLatency;
-            params.hostApiSpecificStreamInfo = NULL;
+        DeviceCandidate candidate = { default_device, "Dispositivo de salida predeterminado" };
+        err = try_open_device(stream, rate, channels, candidate);
+        if (err == paNoError) {
+            return paNoError;
+        }
+        fprintf(stderr, "%sNo se pudo abrir el dispositivo de salida predeterminado: %s%s\n", COLOR_WARNING, Pa_GetErrorText(err), COLOR_RESET);
+    }
 
-            PaError err = Pa_OpenStream(stream, NULL, &params, (double)rate, paFramesPerBufferUnspecified, paNoFlag, NULL, NULL);
+    PaHostApiIndex default_host = Pa_GetDefaultHostApi();
+    if (default_host >= 0) {
+        const PaHostApiInfo *host = Pa_GetHostApiInfo(default_host);
+        if (host && host->defaultOutputDevice != paNoDevice && host->defaultOutputDevice != default_device) {
+            DeviceCandidate candidate = { host->defaultOutputDevice, "Dispositivo por API" };
+            err = try_open_device(stream, rate, channels, candidate);
             if (err == paNoError) {
-                const PaHostApiInfo *host_info = Pa_GetHostApiInfo(info->hostApi);
-                const char *api_name = host_info ? host_info->name : "API desconocida";
-                printf(COLOR_INFO STYLE_BOLD "> Dispositivo de salida:%s %s (%s)%s\n", COLOR_RESET, info->name, api_name, COLOR_RESET);
                 return paNoError;
             }
-            fprintf(stderr, "%sNo se pudo abrir el dispositivo de salida predeterminado: %s%s\n", COLOR_WARNING, Pa_GetErrorText(err), COLOR_RESET);
+            fprintf(stderr, "%sNo se pudo abrir el dispositivo predeterminado de la API %s: %s%s\n", COLOR_WARNING, host->name, Pa_GetErrorText(err), COLOR_RESET);
         }
     }
 
@@ -63,27 +101,36 @@ static PaError open_output_stream(PaStream **stream, long rate, int channels) {
             continue;
         }
         const PaDeviceInfo *info = Pa_GetDeviceInfo(i);
-        if (!info || info->maxOutputChannels < channels) {
+        if (!info) {
             continue;
         }
+        PaHostApiIndex host_api = info->hostApi;
+        const PaHostApiInfo *host_info = Pa_GetHostApiInfo(host_api);
+        if (host_info && host_info->defaultOutputDevice == i) {
+            DeviceCandidate candidate = { i, "Dispositivo predeterminado de la API" };
+            err = try_open_device(stream, rate, channels, candidate);
+            if (err == paNoError) {
+                return paNoError;
+            }
+        }
+    }
 
-        PaStreamParameters params;
-        params.device = i;
-        params.channelCount = channels;
-        params.sampleFormat = paInt16;
-        params.suggestedLatency = info->defaultLowOutputLatency;
-        params.hostApiSpecificStreamInfo = NULL;
-
-        PaError err = Pa_OpenStream(stream, NULL, &params, (double)rate, paFramesPerBufferUnspecified, paNoFlag, NULL, NULL);
+    for (PaDeviceIndex i = 0; i < count; ++i) {
+        if (i == default_device) {
+            continue;
+        }
+        const PaDeviceInfo *info = Pa_GetDeviceInfo(i);
+        if (!info) {
+            continue;
+        }
+        DeviceCandidate candidate = { i, "Dispositivo alternativo" };
+        err = try_open_device(stream, rate, channels, candidate);
         if (err == paNoError) {
-            const PaHostApiInfo *host_info = Pa_GetHostApiInfo(info->hostApi);
-            const char *api_name = host_info ? host_info->name : "API desconocida";
-            printf(COLOR_INFO STYLE_BOLD "> Dispositivo alternativo:%s %s (%s)%s\n", COLOR_RESET, info->name, api_name, COLOR_RESET);
             return paNoError;
         }
     }
 
-    return paDeviceUnavailable;
+    return err;
 }
 
 int player_init(AudioPlayer *player) {
