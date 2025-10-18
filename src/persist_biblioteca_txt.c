@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
+#include <stdlib.h>
 
 /* NOTA IMPORTANTE (lectura en texto):
    Usamos "lectura adelantada" al estilo de cátedra:
@@ -44,6 +45,27 @@ int persist_biblio_load_txt(const char* path,
     return 1;
 }
 
+int persist_biblio_save_txt(const char* path, const tListaC* L){
+    FILE* f = fopen(path, "w");
+    if(!f) return 0;
+
+    for(const tListaC* it = L; it; it = it->sig){
+        if(fprintf(f, "%d;%s;%s;%s;%d;%d\n",
+                   it->info.id,
+                   it->info.titulo,
+                   it->info.artista,
+                   it->info.genero,
+                   it->info.duracion_seg,
+                   it->info.playcount) <= 0){
+            fclose(f);
+            return 0;
+        }
+    }
+
+    fclose(f);
+    return 1;
+}
+
 int persist_playlist_save_txt(const char* path, const tCancion* v, int n){
     FILE* f = fopen(path, "w");
     if(!f) return 0;
@@ -56,5 +78,42 @@ int persist_playlist_save_txt(const char* path, const tCancion* v, int n){
     }
 
     fclose(f);
+    return 1;
+}
+
+int persist_playlist_load_txt(const char* path, tListaC** playlist){
+    FILE* f = fopen(path, "r");
+    if(!f){
+        return (errno == ENOENT) ? 1 : 0;
+    }
+
+    tCancion* arr = NULL;
+    int n = 0, cap = 0;
+
+    tCancion c;
+    int r = fscanf(f, " %d ; %49[^;] ; %49[^;] ; %49[^;] ; %d ; %d",
+                   &c.id, c.titulo, c.artista, c.genero, &c.duracion_seg, &c.playcount);
+
+    while(!feof(f)){
+        if(r == 6){
+            if(n >= cap){
+                int ncap = (cap == 0) ? 8 : cap * 2;
+                tCancion* tmp = (tCancion*)realloc(arr, sizeof(tCancion) * ncap);
+                if(!tmp){ free(arr); fclose(f); return 0; }
+                arr = tmp; cap = ncap;
+            }
+            arr[n++] = c;
+        }
+        r = fscanf(f, " %d ; %49[^;] ; %49[^;] ; %49[^;] ; %d ; %d",
+                   &c.id, c.titulo, c.artista, c.genero, &c.duracion_seg, &c.playcount);
+    }
+
+    fclose(f);
+
+    for(int i = n - 1; i >= 0; --i){
+        if(!lista_push_front(playlist, arr[i])){ free(arr); return 0; }
+    }
+
+    free(arr);
     return 1;
 }

@@ -12,6 +12,9 @@
 int persist_biblio_load_txt(const char* path,
                             tListaC** L, tBSTI** idx, tTrie** trie);
 
+int persist_biblio_save_txt(const char* path, const tListaC* L);
+
 int persist_playlist_save_txt(const char* path, const tCancion* v, int n);
+int persist_playlist_load_txt(const char* path, tListaC** playlist);
 
 #endif /* PERSIST_BIBLIOTECA_TXT_H */

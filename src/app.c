@@ -14,18 +14,50 @@
 
 #include "persist_biblioteca_txt.h"
 #include "persist_usuarios_txt.h"
+#include "persist_userstats_txt.h"
 #include "usuarios_lista.h"
 #include "usuario.h"
 #include "cancion.h"
 /* ===== TUI ANSI sin dependencias ===== */
 #include <termios.h>
 #include <unistd.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <errno.h>
+#include <limits.h>
 
-static void ui_flush_input(void){
-    int c;
-    while((c=getchar())!='\n' && c!=EOF) { /* vacía buffer */ }
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
+static void ui_trim_newline(char* s){
+    if(!s) return;
+    size_t len = strlen(s);
+    if(len && s[len-1] == '\n') s[len-1] = '\0';
 }
 
+static int ui_read_line(char* buffer, size_t len){
+    if(!fgets(buffer, len, stdin)) return 0;
+    ui_trim_newline(buffer);
+    return 1;
+}
+
+static int ui_read_string_prompt(const char* prompt, char* buffer, size_t len){
+    if(prompt) printf("%s", prompt);
+    if(!ui_read_line(buffer, len)) return 0;
+    return buffer[0] != '\0';
+}
+
+static int ui_read_int_prompt(const char* prompt, int* out){
+    char line[64];
+    if(prompt) printf("%s", prompt);
+    if(!ui_read_line(line, sizeof(line))) return 0;
+    char* end = NULL;
+    long val = strtol(line, &end, 10);
+    if(end == line || (end && *end != '\0')) return 0;
+    *out = (int)val;
+    return 1;
+}
 
 static void ansi_clear(void){ printf("\x1b[2J\x1b[H"); }                 /* limpia */
 static void ansi_hide_cursor(void){ printf("\x1b[?25l"); }
@@ -96,9 +128,11 @@ static void ui_press_enter(void){
 
 
 /* Rutas simples */
-#define PATH_BIBLIO   "data/biblioteca.txt"
-#define PATH_USUARIOS "data/usuarios.txt"
-#define PATH_PLAYLIST "data/playlists/miplaylist.txt"
+#define PATH_BIBLIO        "data/biblioteca.txt"
+#define PATH_USUARIOS      "data/usuarios.txt"
+#define PATH_PLAYLIST_DIR  "data/playlist"
+#define PATH_PLAYLIST_FILE "data/playlist/miplaylist.txt"
+#define PATH_USERSTATS_DIR "data/userstats"
 
 /* Estado global del app_run (variables locales al archivo) */
 static tListaC* g_biblio = NULL;
@@ -111,6 +145,151 @@ static tGrafo   g_G;        /* recomendaciones */
 static tListaU* g_users = NULL;
 static tUsuario* g_user = NULL; /* usuario logueado */
 static tListaC* g_playlist = NULL;
+static tUserStats g_user_stats;
+static int g_userstats_loaded = 0;
+
+static int g_dirty_biblio = 0;
+static int g_dirty_users = 0;
+static int g_dirty_playlist = 0;
+static int g_dirty_userstats = 0;
+
+static int ensure_directory(const char* path){
+    struct stat st;
+    if(stat(path, &st) == 0){
+        return S_ISDIR(st.st_mode);
+    }
+    if(errno == ENOENT){
+        return mkdir(path, 0755) == 0;
+    }
+    return 0;
+}
+
+static void ensure_data_directories(void){
+    if(!ensure_directory(PATH_PLAYLIST_DIR)){
+        fprintf(stderr, "WARN: No se pudo asegurar directorio %s\n", PATH_PLAYLIST_DIR);
+    }
+    if(!ensure_directory(PATH_USERSTATS_DIR)){
+        fprintf(stderr, "WARN: No se pudo asegurar directorio %s\n", PATH_USERSTATS_DIR);
+    }
+}
+
+static void userstats_path(const char* username, char* out, size_t len){
+    snprintf(out, len, "%s/%s.txt", PATH_USERSTATS_DIR, username);
+}
+
+static void reset_biblio(void){
+    lista_free(&g_biblio);
+    bst_free(&g_idx);
+    trie_free(&g_trie);
+    g_biblio = NULL;
+    g_idx = NULL;
+    g_trie = NULL;
+    bst_init(&g_idx);
+    trie_init(&g_trie);
+}
+
+static int guardar_userstats_actual(void){
+    if(!g_user || !g_userstats_loaded) return 1;
+    ensure_directory(PATH_USERSTATS_DIR);
+    char path[PATH_MAX];
+    userstats_path(g_user->username, path, sizeof(path));
+    if(!ustats_save_txt(path, &g_user_stats)){
+        fprintf(stderr, "ERROR: No se pudo guardar stats de %s\n", g_user->username);
+        return 0;
+    }
+    g_dirty_userstats = 0;
+    return 1;
+}
+
+static int cargar_userstats_para(tUsuario* u){
+    if(!u) return 0;
+    if(g_userstats_loaded && g_dirty_userstats){
+        if(!guardar_userstats_actual()) return 0;
+    }
+    ustats_free(&g_user_stats);
+    ustats_init(&g_user_stats);
+    ensure_directory(PATH_USERSTATS_DIR);
+    char path[PATH_MAX];
+    userstats_path(u->username, path, sizeof(path));
+    if(!ustats_load_txt(path, &g_user_stats)){
+        fprintf(stderr, "ERROR: No se pudo cargar stats de %s\n", u->username);
+        return 0;
+    }
+    g_userstats_loaded = 1;
+    g_dirty_userstats = 0;
+    return 1;
+}
+
+static void cargar_playlist_desde_archivo(void){
+    lista_free(&g_playlist);
+    g_playlist = NULL;
+    if(!persist_playlist_load_txt(PATH_PLAYLIST_FILE, &g_playlist)){
+        fprintf(stderr, "WARN: No se pudo cargar playlist desde %s\n", PATH_PLAYLIST_FILE);
+    }
+    g_dirty_playlist = 0;
+}
+
+static void guardar_todo(void){
+    ensure_data_directories();
+
+    if(g_dirty_biblio){
+        if(persist_biblio_save_txt(PATH_BIBLIO, g_biblio)){
+            puts("OK: Biblioteca guardada.");
+            g_dirty_biblio = 0;
+        }else{
+            puts("ERROR: al guardar biblioteca.");
+        }
+    }else{
+        puts("Biblioteca sin cambios.");
+    }
+
+    if(g_dirty_playlist){
+        int n = lista_len(g_playlist);
+        if(n > 0){
+            tCancion* v = (tCancion*)malloc(sizeof(tCancion)*n);
+            if(v){
+                lista_to_array(g_playlist, v, n);
+                if(persist_playlist_save_txt(PATH_PLAYLIST_FILE, v, n)){
+                    puts("OK: Playlist guardada.");
+                    g_dirty_playlist = 0;
+                }else{
+                    puts("ERROR: al guardar playlist.");
+                }
+                free(v);
+            }else{
+                puts("Sin memoria para guardar playlist.");
+            }
+        }else{
+            /* playlist vacía -> guardar archivo vacío */
+            if(persist_playlist_save_txt(PATH_PLAYLIST_FILE, NULL, 0)){
+                puts("Playlist vacía guardada.");
+                g_dirty_playlist = 0;
+            }
+        }
+    }else{
+        puts("Playlist sin cambios.");
+    }
+
+    if(g_dirty_users){
+        if(persist_usuarios_save_txt(PATH_USUARIOS, g_users)){
+            puts("OK: Usuarios guardados.");
+            g_dirty_users = 0;
+        }else{
+            puts("ERROR: al guardar usuarios.");
+        }
+    }else{
+        puts("Usuarios sin cambios.");
+    }
+
+    if(g_userstats_loaded){
+        if(g_dirty_userstats){
+            if(guardar_userstats_actual()) puts("OK: Stats de usuario guardadas.");
+            else puts("ERROR: al guardar stats del usuario.");
+        }else{
+            puts("Stats de usuario sin cambios.");
+        }
+    }
+}
 
 /* --- Helpers de UI --- */
 static void banner(void){
@@ -128,29 +307,50 @@ static void menu(void){
     puts("6) Reproducir: encolar / siguiente / ver cola");
     puts("7) Undo (deshacer ultima accion de playlist)");
     puts("8) Construir grafo y recomendar (BFS)");
-    puts("9) Top-N mas reproducidas (global)");
-    puts("10) Guardar playlist y usuarios");
+    puts("9) Estadisticas y leaderboards");
+    puts("10) Top-N mas reproducidas (global)");
+    puts("11) Guardar biblioteca/playlist/usuarios");
     puts("0) Salir");
 }
 
 /* Construye grafo: conecta canciones con mismo artista */
-static void construir_grafo_por_artista(void){
-    /* necesitamos conocer max id para dimensionar G */
-    int maxId = -1;
-    for(tListaC* it=g_biblio; it; it=it->sig)
-        if(it->info.id > maxId) maxId = it->info.id;
-    if(maxId < 0) { grafo_init(&g_G, 0); return; }
-    grafo_init(&g_G, maxId+1);
+static int cmp_cancion_artista(const void* a, const void* b){
+    const tCancion* ca = (const tCancion*)a;
+    const tCancion* cb = (const tCancion*)b;
+    int cmp = strcmp(ca->artista, cb->artista);
+    if(cmp != 0) return cmp;
+    return (ca->id - cb->id);
+}
 
-    /* por artista: O(n^2) simple para MVP */
-    for(tListaC* a=g_biblio; a; a=a->sig){
-        for(tListaC* b=a->sig; b; b=b->sig){
-            if(strcmp(a->info.artista, b->info.artista)==0){
-                grafo_add_edge(&g_G, a->info.id, b->info.id);
-            }
+static void construir_grafo_por_artista(void){
+    int n = lista_len(g_biblio);
+    if(n <= 0){
+        grafo_init(&g_G, 0);
+        puts("Biblioteca vacía: grafo limpio.");
+        return;
+    }
+
+    tCancion* arr = (tCancion*)malloc(sizeof(tCancion) * n);
+    if(!arr){
+        puts("Sin memoria para grafo.");
+        return;
+    }
+    lista_to_array(g_biblio, arr, n);
+
+    int maxId = -1;
+    for(int i=0;i<n;i++) if(arr[i].id > maxId) maxId = arr[i].id;
+    grafo_init(&g_G, maxId + 1);
+
+    qsort(arr, n, sizeof(tCancion), cmp_cancion_artista);
+    int edges = 0;
+    for(int i=1;i<n;i++){
+        if(strcmp(arr[i].artista, arr[i-1].artista) == 0){
+            grafo_add_edge(&g_G, arr[i].id, arr[i-1].id);
+            edges++;
         }
     }
-    puts("OK: Grafo construido por artista.");
+    free(arr);
+    printf("OK: Grafo construido (artistas conectados con %d aristas).\n", edges);
 }
 
 /* Mostrar una lista */
@@ -175,9 +375,7 @@ static int elegir_cancion_por_prefijo(void){
     if(!g_trie){ puts("Trie no inicializado. Cargá la biblioteca primero."); return -1; }
 
     char pref[50];
-    printf("Prefijo de titulo: ");
-    ui_flush_input();
-    if(scanf(" %49[^\n]", pref) != 1) return -1;
+    if(!ui_read_string_prompt("Prefijo de titulo: ", pref, sizeof(pref))) return -1;
 
     enum { KMAX = 10 };
     int ids[KMAX];
@@ -203,10 +401,10 @@ static int elegir_cancion_por_prefijo(void){
         return -1;
     }
 
+    char prompt[64];
+    snprintf(prompt, sizeof(prompt), "Elegí una opción (1-%d, 0 para cancelar): ", printed);
     int sel = 0;
-    printf("Elegí una opción (1-%d, 0 para cancelar): ", printed);
-    ui_flush_input();
-    if(scanf("%d", &sel) != 1 || sel < 1 || sel > printed) {
+    if(!ui_read_int_prompt(prompt, &sel) || sel < 1 || sel > printed){
         puts("Cancelado o selección inválida.");
         return -1;
     }
@@ -219,9 +417,7 @@ static int elegir_cancion_por_prefijo_en_playlist(void){
     if(!g_trie){ puts("Trie no inicializado. Cargá la biblioteca primero."); return -1; }
 
     char pref[50];
-    printf("Prefijo de titulo (en playlist): ");
-    ui_flush_input();
-    if(scanf(" %49[^\n]", pref) != 1) return -1;
+    if(!ui_read_string_prompt("Prefijo de titulo (en playlist): ", pref, sizeof(pref))) return -1;
 
     enum { KMAX = 32 };     /* más amplio, por si la playlist es grande */
     int ids_tmp[KMAX];
@@ -249,14 +445,62 @@ static int elegir_cancion_por_prefijo_en_playlist(void){
         return -1;
     }
 
+    char prompt[64];
+    snprintf(prompt, sizeof(prompt), "Elegí una opción (1-%d, 0 para cancelar): ", printed);
     int sel = 0;
-    printf("Elegí una opción (1-%d, 0 para cancelar): ", printed);
-    ui_flush_input();
-    if(scanf("%d",&sel)!=1 || sel<1 || sel>printed){
+    if(!ui_read_int_prompt(prompt, &sel) || sel<1 || sel>printed){
         puts("Cancelado o selección inválida.");
         return -1;
     }
     return ids[sel-1];
+}
+
+static void playlist_buscar(void){
+    int n = lista_len(g_playlist);
+    if(n <= 0){
+        puts("Playlist vacia.");
+        return;
+    }
+    tCancion* arr = (tCancion*)malloc(sizeof(tCancion) * n);
+    if(!arr){ puts("Sin memoria."); return; }
+    lista_to_array(g_playlist, arr, n);
+
+    int id = 0;
+    if(ui_read_int_prompt("ID a buscar (lineal): ", &id)){
+        long comps = 0;
+        int idx = search_lineal_por_id(arr, n, id, &comps);
+        if(idx >= 0){
+            printf("Encontrada en posición %d (lineal). Comparaciones: %ld\n", idx, comps);
+            cancion_print(&arr[idx]);
+        }else{
+            printf("ID %d no está en la playlist. Comparaciones: %ld\n", id, comps);
+        }
+    }else{
+        puts("Entrada inválida para ID.");
+    }
+
+    tCancion* sorted = (tCancion*)malloc(sizeof(tCancion) * n);
+    if(!sorted){ free(arr); puts("Sin memoria."); return; }
+    memcpy(sorted, arr, sizeof(tCancion)*n);
+    long compsSort = 0, swapsSort = 0;
+    sort_por_titulo_burbuja(sorted, n, &compsSort, &swapsSort);
+
+    char titulo[50];
+    if(ui_read_string_prompt("Titulo exacto para buscar (binaria): ", titulo, sizeof(titulo))){
+        long compsBin = 0;
+        int idx = search_binaria_por_titulo(sorted, n, titulo, &compsBin);
+        if(idx >= 0){
+            printf("Encontrada por binaria en posición %d del vector ordenado.\n", idx);
+            cancion_print(&sorted[idx]);
+        }else{
+            puts("El título no está en la playlist.");
+        }
+        printf("Métricas -> Ordenamiento burbuja: comps=%ld swaps=%ld | Binaria comps=%ld\n",
+               compsSort, swapsSort, compsBin);
+    }
+
+    free(sorted);
+    free(arr);
 }
 
 static const char* g_menu_items[] = {
@@ -268,11 +512,12 @@ static const char* g_menu_items[] = {
     "Reproducir: encolar / siguiente / ver cola",
     "Undo (deshacer ultima accion de playlist)",
     "Construir grafo y recomendar (BFS)",
+    "Estadisticas y leaderboards",
     "Top-N mas reproducidas (global)",
-    "Guardar playlist y usuarios",
+    "Guardar biblioteca/playlist/usuarios",
     "Salir"
 };
-static const int g_menu_count = 11;
+static const int g_menu_count = 12;
 
 static int tui_menu_select(void){
     struct termios orig;
@@ -317,12 +562,14 @@ static int tui_menu_select(void){
 /* --- Menús --- */
 static void do_cargar_biblio(void){
     ui_header("Cargar biblioteca (TXT)");
-    if(!g_trie) trie_init(&g_trie);
+    reset_biblio();
 
-    if(persist_biblio_load_txt(PATH_BIBLIO, &g_biblio, &g_idx, &g_trie))
+    if(persist_biblio_load_txt(PATH_BIBLIO, &g_biblio, &g_idx, &g_trie)){
         puts("OK: Biblioteca cargada.");
-    else
+        g_dirty_biblio = 0;
+    }else{
         puts("ERROR: No se pudo cargar biblioteca. Verifique data/biblioteca.txt");
+    }
 
     ui_press_enter();
 }
@@ -331,43 +578,50 @@ static void do_cargar_biblio(void){
 static void do_login(void){
     ui_header("Login de usuario");
     char user[50];
-    printf("Usuario: ");
-    ui_flush_input();
-    if(scanf(" %49s", user)!=1){ puts("Entrada invalida."); ui_press_enter(); return; }
+    if(!ui_read_string_prompt("Usuario: ", user, sizeof(user))){
+        puts("Entrada invalida.");
+        ui_press_enter();
+        return;
+    }
 
     if(!g_users) listaU_init(&g_users);
-    static int loaded = 0;
-    if(!loaded){
-        if(persist_usuarios_load_txt(PATH_USUARIOS, &g_users))
-            puts("Usuarios (TXT): cargados/creados.");
-        else
-            puts("Usuarios (TXT): ERROR de carga.");
-        loaded = 1;
-    }
 
     tUsuario* u = listaU_find_username(g_users, user);
     if(!u){
         tUsuario nu; memset(&nu,0,sizeof(nu));
         snprintf(nu.username, sizeof(nu.username), "%s", user);
-        if(!listaU_push_front(&g_users, &nu)){ puts("Sin memoria."); ui_press_enter(); return; }
+        if(!listaU_push_front(&g_users, &nu)){
+            puts("Sin memoria.");
+            ui_press_enter();
+            return;
+        }
         u = listaU_find_username(g_users, user);
         puts("Usuario creado.");
+        g_dirty_users = 1;
     }else{
         puts("Usuario encontrado.");
     }
     g_user = u;
+    if(!cargar_userstats_para(g_user)){
+        puts("Advertencia: no se pudieron cargar estadísticas del usuario.");
+        ustats_init(&g_user_stats);
+        g_userstats_loaded = 1;
+    }
+
     puts("");
     usuario_print(g_user);
+    if(g_user){
+        double horas = g_user->segundos_escucha_total / 3600.0;
+        printf("Tiempo escuchado: %.2f horas (%ld seg)\n", horas, g_user->segundos_escucha_total);
+    }
     ui_press_enter();
 }
 
 
 static void do_buscar_bst(void){
     char artista[50], titulo[50];
-    ui_flush_input();
-    printf("Artista: "); if(scanf(" %49[^\n]", artista)!=1) return;
-    ui_flush_input();
-    printf("Titulo:  "); if(scanf(" %49[^\n]", titulo)!=1) return;
+    if(!ui_read_string_prompt("Artista: ", artista, sizeof(artista))) return;
+    if(!ui_read_string_prompt("Titulo:  ", titulo, sizeof(titulo))) return;
     tCancion* c = bst_find(g_idx, artista, titulo);
     if(!c) puts("No encontrada.");
     else   cancion_print(c);
@@ -375,8 +629,7 @@ static void do_buscar_bst(void){
 
 static void do_buscar_trie(void){
     char pref[50];
-    ui_flush_input();
-    printf("Prefijo de titulo: "); if(scanf(" %49[^\n]", pref)!=1) return;
+    if(!ui_read_string_prompt("Prefijo de titulo: ", pref, sizeof(pref))) return;
     int ids[10]; int k = trie_collect_prefix(g_trie, pref, ids, 10);
     if(k<=0){ puts("Sin coincidencias."); return; }
     for(int i=0;i<k;i++){
@@ -393,9 +646,9 @@ static void do_playlist(void){
         puts("2) Quitar por id");
         puts("3) Mostrar playlist");
         puts("4) Quitar por prefijo (Trie)");
+        puts("5) Buscar (lineal/binaria)");
         puts("0) Volver");
-        ui_flush_input();
-        printf("> "); if(scanf("%d",&op)!=1) return;
+        if(!ui_read_int_prompt("> ", &op)) return;
 
         if(op==1){
             ui_header("Playlist > Agregar por prefijo");
@@ -405,17 +658,19 @@ static void do_playlist(void){
                 if(c && lista_push_front(&g_playlist, *c)){
                     tAccion a = { .action=1, .song_id=id, .aux=0 };
                     pila_push(&g_undo, a);
+                    g_dirty_playlist = 1;
                     puts("Agregada desde Trie.");
                 }else puts("No se pudo agregar.");
             }
             ui_press_enter();
         }else if(op==2){
             ui_header("Playlist > Quitar por id");
-            ui_flush_input();
-            int id; printf("id: "); if(scanf("%d",&id)==1){
+            int id = 0;
+            if(ui_read_int_prompt("id: ", &id)){
                 if(lista_remove_by_id(&g_playlist, id)){
                     tAccion a = { .action=2, .song_id=id, .aux=0 };
                     pila_push(&g_undo, a);
+                    g_dirty_playlist = 1;
                     puts("Quitada.");
                 }else puts("No estaba en playlist.");
             }
@@ -431,9 +686,14 @@ static void do_playlist(void){
                 if(lista_remove_by_id(&g_playlist, id)){
                     tAccion a = { .action=2, .song_id=id, .aux=0 };
                     pila_push(&g_undo, a);
+                    g_dirty_playlist = 1;
                     puts("Quitada (Trie).");
                 }else puts("Esa canción no está en tu playlist.");
             }
+            ui_press_enter();
+        }else if(op==5){
+            ui_header("Playlist > Buscar");
+            playlist_buscar();
             ui_press_enter();
         }
     }while(op!=0);
@@ -445,11 +705,11 @@ static void do_undo(void){
     tAccion a;
     if(!pila_pop(&g_undo, &a)){ puts("Nada para deshacer."); return; }
     if(a.action==1){ /* se había agregado -> ahora quitar */
-        if(lista_remove_by_id(&g_playlist, a.song_id)) puts("Undo: se quitó.");
+        if(lista_remove_by_id(&g_playlist, a.song_id)){ puts("Undo: se quitó."); g_dirty_playlist = 1; }
         else puts("Undo: no estaba.");
     }else if(a.action==2){ /* se había quitado -> reinsertar */
         tCancion* c = lista_find_by_id(g_biblio, a.song_id);
-        if(c && lista_push_front(&g_playlist, *c)) puts("Undo: se reinsertó.");
+        if(c && lista_push_front(&g_playlist, *c)){ puts("Undo: se reinsertó."); g_dirty_playlist = 1; }
         else puts("Undo: fallo al reinsertar.");
     }else{
         puts("Accion desconocida.");
@@ -464,11 +724,10 @@ static void do_repro(void){
         puts("2) Siguiente (play)");
         puts("3) Ver cola (ids)");
         puts("0) Volver");
-        ui_flush_input();
-        printf("> "); if(scanf("%d",&op)!=1) return;
+        if(!ui_read_int_prompt("> ", &op)) return;
         if(op==1){
-            ui_flush_input();
-            int id; printf("id: "); if(scanf("%d",&id)!=1) continue;
+            int id = 0;
+            if(!ui_read_int_prompt("id: ", &id)) continue;
             tCancion* c = lista_find_by_id(g_biblio, id);
             if(!c){ puts("No existe en biblioteca."); continue; }
             tPlayItem it = { .song_id=id };
@@ -480,9 +739,16 @@ static void do_repro(void){
             tCancion* c = lista_find_by_id(g_biblio, it.song_id);
             if(!c){ puts("Cancion inexistente (id huérfano)."); continue; }
             c->playcount++;
+            g_dirty_biblio = 1;
             if(g_user){
                 g_user->reproducciones_totales++;
                 g_user->segundos_escucha_total += c->duracion_seg;
+                g_dirty_users = 1;
+                if(ustats_add_play(&g_user_stats, c->id, c->duracion_seg)){
+                    g_dirty_userstats = 1;
+                }else{
+                    puts("Advertencia: no se pudieron actualizar las stats detalladas.");
+                }
             }
             printf("> Reproduciendo: "); cancion_print(c);
             if(g_user){ printf("Usuario "); usuario_print(g_user); }
@@ -504,10 +770,9 @@ static void do_repro(void){
 
 static void do_recomendar(void){
     construir_grafo_por_artista();
-    ui_flush_input();
-    int id,k; printf("Desde id: "); if(scanf("%d",&id)!=1) return;
-    ui_flush_input();
-    printf("Cuantos? "); if(scanf("%d",&k)!=1) return;
+    int id = 0, k = 0;
+    if(!ui_read_int_prompt("Desde id: ", &id)) return;
+    if(!ui_read_int_prompt("Cuantos? ", &k) || k <= 0){ puts("Cantidad inválida."); return; }
     int* out = (int*)malloc(sizeof(int)*k);
     if(!out){ puts("Sin memoria."); return; }
     int n = grafo_bfs(&g_G, id, out, k);
@@ -520,6 +785,86 @@ static void do_recomendar(void){
         }
     }
     free(out);
+}
+
+static int cmp_stats_desc(const void* a, const void* b){
+    const tUserSongStat* sa = (const tUserSongStat*)a;
+    const tUserSongStat* sb = (const tUserSongStat*)b;
+    if(sa->plays != sb->plays) return (sb->plays - sa->plays);
+    if(sa->segs < sb->segs) return 1;
+    if(sa->segs > sb->segs) return -1;
+    return sa->song_id - sb->song_id;
+}
+
+static int cmp_usuario_por_plays_desc(const void* a, const void* b){
+    const tUsuario* ua = (const tUsuario*)a;
+    const tUsuario* ub = (const tUsuario*)b;
+    if(ua->reproducciones_totales != ub->reproducciones_totales)
+        return (ub->reproducciones_totales - ua->reproducciones_totales);
+    if(ua->segundos_escucha_total < ub->segundos_escucha_total) return 1;
+    if(ua->segundos_escucha_total > ub->segundos_escucha_total) return -1;
+    return strcmp(ua->username, ub->username);
+}
+
+static void do_estadisticas(void){
+    ui_header("Estadisticas & Leaderboards");
+
+    if(!g_users){
+        puts("No hay usuarios cargados.");
+        ui_press_enter();
+        return;
+    }
+
+    if(g_user){
+        printf("Usuario activo: %s\n", g_user->username);
+        printf("Total reproducciones: %d\n", g_user->reproducciones_totales);
+        double horas = g_user->segundos_escucha_total / 3600.0;
+        printf("Tiempo escuchado: %.2f horas (%ld seg)\n", horas, g_user->segundos_escucha_total);
+        if(g_userstats_loaded && g_user_stats.n > 0){
+            tUserSongStat* arr = (tUserSongStat*)malloc(sizeof(tUserSongStat)*g_user_stats.n);
+            if(arr){
+                memcpy(arr, g_user_stats.v, sizeof(tUserSongStat)*g_user_stats.n);
+                qsort(arr, g_user_stats.n, sizeof(tUserSongStat), cmp_stats_desc);
+                int limit = g_user_stats.n < 5 ? g_user_stats.n : 5;
+                puts("Top canciones del usuario:");
+                for(int i=0;i<limit;i++){
+                    tCancion* c = lista_find_by_id(g_biblio, arr[i].song_id);
+                    if(c){
+                        printf("%d) ", i+1);
+                        cancion_print(c);
+                    }else{
+                        printf("%d) Cancion id=%d (plays=%d, seg=%ld)\n", i+1, arr[i].song_id, arr[i].plays, arr[i].segs);
+                    }
+                }
+                free(arr);
+            }
+            printf("Canciones únicas escuchadas: %d\n", g_user_stats.n);
+        }else{
+            puts("Aún no hay estadísticas detalladas para este usuario.");
+        }
+    }else{
+        puts("No hay usuario activo.");
+    }
+
+    int total = listaU_len(g_users);
+    if(total > 0){
+        tUsuario* arrU = (tUsuario*)malloc(sizeof(tUsuario)*total);
+        if(arrU){
+            int idx = 0;
+            for(tListaU* it = g_users; it; it = it->sig) arrU[idx++] = it->info;
+            qsort(arrU, total, sizeof(tUsuario), cmp_usuario_por_plays_desc);
+            int limit = total < 5 ? total : 5;
+            puts("\nLeaderboard global (reproducciones):");
+            for(int i=0;i<limit;i++){
+                double horas = arrU[i].segundos_escucha_total / 3600.0;
+                printf("%d) %-12s plays=%d horas=%.2f\n", i+1, arrU[i].username,
+                       arrU[i].reproducciones_totales, horas);
+            }
+            free(arrU);
+        }
+    }
+
+    ui_press_enter();
 }
 
 static void do_top(void){
@@ -535,32 +880,34 @@ static void do_top(void){
 }
 
 static void do_guardar(void){
-    /* Guardar playlist */
-    int n = lista_len(g_playlist);
-    if(n>0){
-        tCancion* v = (tCancion*)malloc(sizeof(tCancion)*n);
-        if(!v){ puts("Sin memoria."); goto usuarios; }
-        lista_to_array(g_playlist, v, n);
-        if(persist_playlist_save_txt(PATH_PLAYLIST, v, n))
-            puts("OK: Playlist guardada.");
-        else
-            puts("ERROR: al guardar playlist.");
-        free(v);
-    }else puts("Playlist vacia: nada que guardar.");
-
-usuarios:
-    if(persist_usuarios_save_txt(PATH_USUARIOS, g_users))
-        puts("OK: Usuarios guardados.");
-    else
-        puts("ERROR: al guardar usuarios.");
+    ui_header("Guardar estado");
+    guardar_todo();
+    ui_press_enter();
 }
 
 /* --- Loop principal --- */
 void app_run(void){
     banner();
+    ensure_data_directories();
+
     cola_init(&g_queue);
     pila_init(&g_undo);
-    trie_init(&g_trie); /* por si cargamos biblio luego */
+    bst_init(&g_idx);
+    trie_init(&g_trie);
+    ustats_init(&g_user_stats);
+
+    if(!g_users) listaU_init(&g_users);
+    if(!persist_usuarios_load_txt(PATH_USUARIOS, &g_users)){
+        puts("WARN: No se pudieron cargar usuarios existentes.");
+    }
+    g_dirty_users = 0;
+    g_dirty_biblio = 0;
+    g_dirty_playlist = 0;
+    g_dirty_userstats = 0;
+    g_userstats_loaded = 0;
+    g_user = NULL;
+
+    cargar_playlist_desde_archivo();
 
     int op=-1;
     do{
@@ -577,12 +924,18 @@ void app_run(void){
             case 6: do_repro(); break;
             case 7: do_undo(); break;
             case 8: do_recomendar(); break;
-            case 9: do_top(); break;
-            case 10: do_guardar(); break;
+            case 9: do_estadisticas(); break;
+            case 10: do_top(); break;
+            case 11: do_guardar(); break;
             case 0:  break;
             default: puts("Opcion invalida.");
         }
     }while(op!=0);
+
+    if(g_dirty_biblio || g_dirty_playlist || g_dirty_users || (g_userstats_loaded && g_dirty_userstats)){
+        puts("Guardando cambios pendientes antes de salir...");
+        guardar_todo();
+    }
 
     /* liberar memoria */
     lista_free(&g_playlist);
@@ -592,4 +945,5 @@ void app_run(void){
     cola_free(&g_queue);
     pila_free(&g_undo);
     listaU_free(&g_users);
+    ustats_free(&g_user_stats);
 }
