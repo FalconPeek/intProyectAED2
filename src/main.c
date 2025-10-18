@@ -9,8 +9,8 @@
 static void print_banner() {
     printf("=======================================\n");
     printf("       Proyecto Integrador en C        \n");
-    printf("             AdivinaNro+               \n");
-    printf("            Version 1.0.0              \n");
+    printf("          Reproductor Offline          \n");
+    printf("             Version 1.0.0              \n");
     printf("              Coded by                 \n");
     printf("              - Lucas                  \n");
     printf("              - Alexis                 \n");
