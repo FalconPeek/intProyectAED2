@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include "commons.h"
+#include "app.h"
 
 /* Fase 01
     - Mostrar banner del proyecto
@@ -23,5 +24,7 @@ int main() {
     print_banner();
     printf("MAX_STR = %d\n", MAX_STR);
     puts("Build OK. Proxima Fase: TADs base (RNG, lista, pila, cola, BST).");
+
+    app_run();
     return OK;
 }
