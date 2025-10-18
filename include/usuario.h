@@ -1,20 +1,16 @@
 #ifndef USUARIO_H
 #define USUARIO_H
+
 #include "commons.h"
 
-typedef struct 
-{
-    tString username; // nombre del usuario
-    long segundos_escucha_total; // segundos totales escuchados
-    int reproducciones_totales; // número total de reproducciones
+/* Modelo estándar usado en persist.c */
+typedef struct {
+    tString username;                 /* clave primaria (sin espacios) */
+    long    segundos_escucha_total;   /* acumulado en segundos */
+    int     reproducciones_totales;   /* cantidad total de reproducciones */
 } tUsuario;
 
+/* Utilidad para imprimir (debug/reportes) */
 void usuario_print(const tUsuario* u);
-
-typedef struct {
-    int songId; // identificador de la canción
-    int plays;  // número de reproducciones de la canción por el usuario
-    long segundosEscuchados; // segundos escuchados de la canción por el usuario
-} tUserSongStats;
 
 #endif /* USUARIO_H */

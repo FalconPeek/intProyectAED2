@@ -6,7 +6,8 @@ CPPFLAGS ?= -Iinclude
 LDFLAGS  ?=
 
 TARGET   := main
-SRC      := $(wildcard src/*.c)
+##SRC      := $(wildcard src/*.c)
+SRC := $(filter-out src/persist.c,$(wildcard src/*.c))
 OBJ      := $(SRC:src/%.c=build/%.o)
 
 .PHONY: all run debug clean print

@@ -8,6 +8,9 @@ typedef struct nodoL {
     struct nodoL* sig;
 } tListaC;
 
+tCancion* lista_find_by_id(tListaC* L, int id);
+int lista_remove_by_id(tListaC** L, int id); /* 1 ok, 0 no encontrado */
+
 void lista_init(tListaC** L);                         /* *L=NULL */
 int  lista_vacia(const tListaC* L);
 int  lista_push_front(tListaC** L, tCancion x);        /* 1 ok, 0 sin memoria */

@@ -46,3 +46,21 @@ void lista_free(tListaC** L){
         free(x);
     }
 }
+
+tCancion* lista_find_by_id(tListaC* L, int id){
+    for(; L; L=L->sig) if(L->info.id==id) return &L->info;
+    return NULL;
+}
+
+int lista_remove_by_id(tListaC** L, int id){
+    tListaC* ant=NULL; tListaC* cur=*L;
+    while(cur){
+        if(cur->info.id==id){
+            if(ant) ant->sig = cur->sig; else *L = cur->sig;
+            free(cur);
+            return 1;
+        }
+        ant = cur; cur = cur->sig;
+    }
+    return 0;
+}
