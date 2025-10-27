@@ -340,15 +340,37 @@ int library_scan(SongLibrary *library) {
     return 0;
 }
 
-void library_print(const SongLibrary *library) {
+#define COLOR_RESET "\033[0m"
+#define COLOR_PRIMARY "\033[38;5;45m"
+#define COLOR_SECONDARY "\033[38;5;252m"
+#define COLOR_HIGHLIGHT "\033[38;5;213m"
+#define COLOR_WARNING "\033[38;5;221m"
+#define STYLE_BOLD "\033[1m"
+#define STYLE_DIM "\033[2m"
+
+void library_print(const SongLibrary *library, size_t highlight_index) {
     if (!library) {
         return;
     }
-    printf("\nBiblioteca actual (%zu canciones)\n", library->count);
-    printf("=================================\n");
+
+    printf("%s%sBiblioteca actual%s\n", COLOR_PRIMARY, STYLE_BOLD, COLOR_RESET);
+    printf("%s%sTotal: %zu canciones%s\n", COLOR_SECONDARY, STYLE_DIM, library->count, COLOR_RESET);
+    printf("%s%-5s %-48s %-30s%s\n", COLOR_SECONDARY, "#", "Título", "Artista", COLOR_RESET);
+    printf("%s%-5s %-48s %-30s%s\n", COLOR_SECONDARY, "────", "────────────────────────────────────────────────", "────────────────────────────", COLOR_RESET);
+
+    int has_highlight = highlight_index < library->count;
     for (size_t i = 0; i < library->count; ++i) {
-        printf("[%zu] %s — %s\n", i + 1, library->songs[i].title, library->songs[i].artist);
+        int is_highlight = has_highlight && i == highlight_index;
+        const char *row_color = is_highlight ? COLOR_HIGHLIGHT : COLOR_SECONDARY;
+        const char *row_style = is_highlight ? STYLE_BOLD : "";
+        const char *marker = is_highlight ? "▶" : " ";
+        printf("%s%s%3zu%s %-48.48s %-30.30s%s\n", row_color, row_style, i + 1, marker, library->songs[i].title, library->songs[i].artist, COLOR_RESET);
     }
+
+    if (library->count == 0) {
+        printf("%s%sNo hay canciones en la biblioteca.%s\n", COLOR_WARNING, STYLE_DIM, COLOR_RESET);
+    }
+
     printf("\n");
 }
 

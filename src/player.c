@@ -12,11 +12,125 @@
 
 #define BUFFER_SIZE 8192
 
+#define COLOR_RESET "\033[0m"
+#define COLOR_INFO "\033[38;5;45m"
+#define COLOR_SUCCESS "\033[38;5;120m"
+#define COLOR_ERROR "\033[38;5;203m"
+#define COLOR_WARNING "\033[38;5;221m"
+#define STYLE_BOLD "\033[1m"
+
 static int ensure_initialized(AudioPlayer *player) {
     if (player->initialized) {
         return 0;
     }
     return -1;
+}
+
+typedef struct {
+    PaDeviceIndex index;
+    const char *label;
+} DeviceCandidate;
+
+static PaError try_open_device(PaStream **stream, long rate, int channels, DeviceCandidate candidate) {
+    const PaDeviceInfo *info = Pa_GetDeviceInfo(candidate.index);
+    if (!info) {
+        return paInvalidDevice;
+    }
+    if (info->maxOutputChannels < channels) {
+        return paInvalidChannelCount;
+    }
+
+    PaStreamParameters params;
+    params.device = candidate.index;
+    params.channelCount = channels;
+    params.sampleFormat = paInt16;
+    params.suggestedLatency = info->defaultLowOutputLatency;
+    params.hostApiSpecificStreamInfo = NULL;
+
+    PaError support = Pa_IsFormatSupported(NULL, &params, (double)rate);
+    if (support != paNoError) {
+        fprintf(stderr, "%sEl dispositivo %s no soporta el formato solicitado: %s%s\n", COLOR_WARNING, info->name, Pa_GetErrorText(support), COLOR_RESET);
+        return support;
+    }
+
+    PaError err = Pa_OpenStream(stream, NULL, &params, (double)rate, paFramesPerBufferUnspecified, paNoFlag, NULL, NULL);
+    if (err == paNoError) {
+        const PaHostApiInfo *host_info = Pa_GetHostApiInfo(info->hostApi);
+        const char *api_name = host_info ? host_info->name : "API desconocida";
+        printf(COLOR_INFO STYLE_BOLD "> %s:%s %s (%s)%s\n", candidate.label, COLOR_RESET, info->name, api_name, COLOR_RESET);
+    }
+    return err;
+}
+
+static PaError open_output_stream(PaStream **stream, long rate, int channels) {
+    if (!stream || channels <= 0) {
+        return paInvalidChannelCount;
+    }
+
+    PaError err = paDeviceUnavailable;
+    PaDeviceIndex default_device = Pa_GetDefaultOutputDevice();
+    if (default_device != paNoDevice) {
+        DeviceCandidate candidate = { default_device, "Dispositivo de salida predeterminado" };
+        err = try_open_device(stream, rate, channels, candidate);
+        if (err == paNoError) {
+            return paNoError;
+        }
+        fprintf(stderr, "%sNo se pudo abrir el dispositivo de salida predeterminado: %s%s\n", COLOR_WARNING, Pa_GetErrorText(err), COLOR_RESET);
+    }
+
+    PaHostApiIndex default_host = Pa_GetDefaultHostApi();
+    if (default_host >= 0) {
+        const PaHostApiInfo *host = Pa_GetHostApiInfo(default_host);
+        if (host && host->defaultOutputDevice != paNoDevice && host->defaultOutputDevice != default_device) {
+            DeviceCandidate candidate = { host->defaultOutputDevice, "Dispositivo por API" };
+            err = try_open_device(stream, rate, channels, candidate);
+            if (err == paNoError) {
+                return paNoError;
+            }
+            fprintf(stderr, "%sNo se pudo abrir el dispositivo predeterminado de la API %s: %s%s\n", COLOR_WARNING, host->name, Pa_GetErrorText(err), COLOR_RESET);
+        }
+    }
+
+    PaDeviceIndex count = Pa_GetDeviceCount();
+    if (count < 0) {
+        return (PaError)count;
+    }
+
+    for (PaDeviceIndex i = 0; i < count; ++i) {
+        if (i == default_device) {
+            continue;
+        }
+        const PaDeviceInfo *info = Pa_GetDeviceInfo(i);
+        if (!info) {
+            continue;
+        }
+        PaHostApiIndex host_api = info->hostApi;
+        const PaHostApiInfo *host_info = Pa_GetHostApiInfo(host_api);
+        if (host_info && host_info->defaultOutputDevice == i) {
+            DeviceCandidate candidate = { i, "Dispositivo predeterminado de la API" };
+            err = try_open_device(stream, rate, channels, candidate);
+            if (err == paNoError) {
+                return paNoError;
+            }
+        }
+    }
+
+    for (PaDeviceIndex i = 0; i < count; ++i) {
+        if (i == default_device) {
+            continue;
+        }
+        const PaDeviceInfo *info = Pa_GetDeviceInfo(i);
+        if (!info) {
+            continue;
+        }
+        DeviceCandidate candidate = { i, "Dispositivo alternativo" };
+        err = try_open_device(stream, rate, channels, candidate);
+        if (err == paNoError) {
+            return paNoError;
+        }
+    }
+
+    return err;
 }
 
 int player_init(AudioPlayer *player) {
@@ -93,10 +207,10 @@ int player_play_song(AudioPlayer *player, const Song *song, const char *base_dir
         return -1;
     }
 
-    PaStream *stream;
-    PaError pa_err = Pa_OpenDefaultStream(&stream, 0, channels, paInt16, (double)rate, paFramesPerBufferUnspecified, NULL, NULL);
+    PaStream *stream = NULL;
+    PaError pa_err = open_output_stream(&stream, rate, channels);
     if (pa_err != paNoError) {
-        fprintf(stderr, "No se pudo abrir el stream de audio: %s\n", Pa_GetErrorText(pa_err));
+        fprintf(stderr, "%sNo se encontró un dispositivo de salida disponible: %s%s\n", COLOR_ERROR, Pa_GetErrorText(pa_err), COLOR_RESET);
         mpg123_close(mh);
         mpg123_delete(mh);
         return -1;
@@ -104,7 +218,7 @@ int player_play_song(AudioPlayer *player, const Song *song, const char *base_dir
 
     pa_err = Pa_StartStream(stream);
     if (pa_err != paNoError) {
-        fprintf(stderr, "No se pudo iniciar el stream: %s\n", Pa_GetErrorText(pa_err));
+        fprintf(stderr, "%sNo se pudo iniciar el stream: %s%s\n", COLOR_ERROR, Pa_GetErrorText(pa_err), COLOR_RESET);
         Pa_CloseStream(stream);
         mpg123_close(mh);
         mpg123_delete(mh);
@@ -114,13 +228,15 @@ int player_play_song(AudioPlayer *player, const Song *song, const char *base_dir
     unsigned char buffer[BUFFER_SIZE];
     size_t done = 0;
     int mpg_err = MPG123_OK;
+    int success = 1;
 
-    printf("> Reproduciendo: %s — %s\n", song->title, song->artist);
+    printf(COLOR_SUCCESS STYLE_BOLD "> Reproduciendo:%s %s — %s%s\n", COLOR_RESET, song->title, song->artist, COLOR_RESET);
 
     do {
         mpg_err = mpg123_read(mh, buffer, sizeof(buffer), &done);
         if (mpg_err != MPG123_OK && mpg_err != MPG123_DONE) {
-            fprintf(stderr, "Error al decodificar %s: %s\n", filepath, mpg123_plain_strerror(mpg_err));
+            fprintf(stderr, "%sError al decodificar %s: %s%s\n", COLOR_ERROR, filepath, mpg123_plain_strerror(mpg_err), COLOR_RESET);
+            success = 0;
             break;
         }
         if (done == 0) {
@@ -132,21 +248,25 @@ int player_play_song(AudioPlayer *player, const Song *song, const char *base_dir
         }
         pa_err = Pa_WriteStream(stream, buffer, frames);
         if (pa_err != paNoError) {
-            fprintf(stderr, "Error al escribir en el stream: %s\n", Pa_GetErrorText(pa_err));
+            fprintf(stderr, "%sError al escribir en el stream: %s%s\n", COLOR_ERROR, Pa_GetErrorText(pa_err), COLOR_RESET);
+            success = 0;
             break;
         }
     } while (mpg_err != MPG123_DONE);
 
-    Pa_StopStream(stream);
+    PaError stop_err = Pa_StopStream(stream);
+    if (stop_err != paNoError) {
+        fprintf(stderr, "%sNo se pudo detener el stream correctamente: %s%s\n", COLOR_WARNING, Pa_GetErrorText(stop_err), COLOR_RESET);
+        success = 0;
+    }
     Pa_CloseStream(stream);
     mpg123_close(mh);
     mpg123_delete(mh);
 
-    if (mpg_err != MPG123_DONE) {
-        fprintf(stderr, "La reproducción finalizó con código %d (%s)\n", mpg_err, mpg123_plain_strerror(mpg_err));
-    } else {
-        printf("> Canción finalizada\n");
+    if (success && mpg_err == MPG123_DONE) {
+        printf(COLOR_SUCCESS STYLE_BOLD "> Canción finalizada%s\n", COLOR_RESET);
+        return 0;
     }
 
-    return 0;
+    return -1;
 }

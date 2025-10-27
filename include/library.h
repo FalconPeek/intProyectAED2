@@ -22,7 +22,7 @@ typedef struct {
 int library_init(SongLibrary *library, const char *songs_dir, const char *metadata_path);
 void library_free(SongLibrary *library);
 int library_scan(SongLibrary *library);
-void library_print(const SongLibrary *library);
+void library_print(const SongLibrary *library, size_t highlight_index);
 
 size_t library_recommend_by_artist(const SongLibrary *library, size_t current_index, size_t *output_indices, size_t max_results);
 
