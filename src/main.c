@@ -1,10 +1,11 @@
 #include <stdio.h>
 #define MAX_SIZE 50
 
-// Function prototypes
 
+// Function prototypes
 void pedirDatos();
 void mostrarDatos();
+
 
 //Variables
 typedef struct {
@@ -14,7 +15,7 @@ typedef struct {
 
 Person persona;
 
-int main() {
+int main(void) {
     pedirDatos();
     mostrarDatos();
     return 0;
