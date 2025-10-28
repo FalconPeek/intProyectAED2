@@ -8,3 +8,5 @@ a.out
 # Herramientas
 .vscode/
 main
+sim_hospital
+.DS_Store
